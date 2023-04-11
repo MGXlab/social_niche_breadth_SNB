@@ -31,12 +31,12 @@ Let us know if other input formats would be useful.
 
 The output file looks like this:
 
-| taxonomic lineage | number of samples | mean relative abundance | SNB score | ... |
-| --- | --- | --- | --- | --- |
-| super kingdom.Archaea | 11256| 0.0959699 | 0.5215317 | ... |
-| super kingdom.Bacteria | 22295 | 0.9615460 | 0.5627098 | ... |
-| super kingdom.Viruses | 0 | nan | nan | ... |
-| super kingdom.Archaea;phylum.Candidatus_Aenigmarchaeota | 23 | 0.0013518 | 0.5174395 | ... |
+| taxonomic lineage | number of samples | mean relative abundance | SNB score |
+| --- | --- | --- | --- |
+| super kingdom.Archaea | 11256| 0.0959699 | 0.5215317 |
+| super kingdom.Bacteria | 22295 | 0.9615460 | 0.5627098 |
+| super kingdom.Viruses | 0 | nan | nan |
+| super kingdom.Archaea;phylum.Candidatus_Aenigmarchaeota | 23 | 0.0013518 | 0.5174395 |
 | ... | ... | ... | ... | ... |
 
 # Installation
