@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 
 __author__ = 'F. A. Bastiaan von Meijenfeldt'
-__version__ = '0.1'
-__date__ = '11 April, 2023'
+__version__ = '0.2'
+__date__ = '13 April, 2023'
 
 import argparse
 import copy
@@ -218,6 +218,39 @@ def parse_arguments():
                 round(args.pairwise_comparisson_cutoff)
                 )
 
+    if args.presence_cutoff == 0:
+        print(
+                '\n'
+                '#######\n'
+                'warning: --c1 / --presence_cutoff is set to zero. All taxa '
+                'with a non-zero abundance in a microbiome are considered '
+                'present.\n'
+                '#######'
+                )
+
+        setattr(
+                args,
+                'presence_cutoff',
+                round(args.presence_cutoff)
+                )
+
+    if args.pairwise_comparisson_cutoff == 0:
+        print(
+                '\n'
+                '#######\n'
+                'warning: --c2 / --pairwise_comparisson_cutoff is set to '
+                'zero. All lineages at the taxonomic rank of comparisson with '
+                'a non-zero abundance in a microbiome are used for pairwise '
+                'dissimilarity calculations.\n'
+                '#######'
+                )
+
+        setattr(
+                args,
+                'pairwise_comparisson_cutoff',
+                round(args.pairwise_comparisson_cutoff)
+                )
+
     print()
     print(args)
 
@@ -226,9 +259,64 @@ def parse_arguments():
 
 def import_taxonomic_profiles(args):
     def import_single_file(file_, print_line_n=False):
+        def parse_header(header_line):
+            sample2i = {}
+            sample2n_reads = {}
+            relative_abundance_table = False
+
+            error = False
+            for i, header in enumerate(header_line):
+                if i == 0:
+                    continue
+
+                header_split = header.split(' ')
+                if len(header_split) == 2:
+                    try:
+                        sample, n_reads = header_split
+                        n_reads = int(n_reads.lstrip('(').rstrip(')'))
+                    except ValueError:
+                        error = True
+
+                    if relative_abundance_table:
+                        # Samples have different formats.
+                        error = True
+                elif len(header_split) == 1:
+                    relative_abundance_table = True
+
+                    sample = header
+                    # Set total number of reads to 1 for a relative abundance
+                    # tables.
+                    n_reads = 1
+                else:
+                    error = True
+
+                if error:
+                    sys.exit(
+                            f'error: {file_} does not have the required '
+                            'header format. The header should look like '
+                            'this for a table with read counts:\n'
+                            'taxonomic lineage<TAB>'
+                            'unique_sample_name_without_spaces<SPACE>'
+                            '(<total number of prokaryotic reads>)<TAB>'
+                            '...etc\n'
+                            '\n'
+                            'For a relative abundance table, the header '
+                            'should look like this:\n'
+                            'taxonomic lineage<TAB>'
+                            'unique_sample_name_without_spaces<TAB>...etc\n'
+                            )
+
+                if sample in sample2n_reads:
+                    sys.exit('error: samples in header of '
+                            f'{file_} are not unique.')
+
+                sample2i[sample] = i
+                sample2n_reads[sample] = n_reads
+
+            return (sample2i, sample2n_reads, relative_abundance_table)
+
         lineage2samples = {}
         sample2lineages_to_compare = {}
-        sample2n_reads = {}
 
         compressed = False
         if file_.endswith('.gz'):
@@ -247,32 +335,11 @@ def import_taxonomic_profiles(args):
             line = line.rstrip('\n').split('\t')
 
             if n == 0:
-                sample2i = {}
-
-                for i, header in enumerate(line):
-                    if i == 0:
-                        continue
-
-                    try:
-                        sample, n_reads = header.split(' ')
-                        n_reads = int(n_reads.lstrip('(').rstrip(')'))
-                    except:
-                        sys.exit(
-                                f'error: {file_} does not have the required '
-                                'header format. The header should look like '
-                                'this:\n'
-                                'taxonomic lineage<TAB>'
-                                'unique_sample_name_without_spaces<SPACE>'
-                                '(<total number of prokaryotic reads>)<TAB>'
-                                '...etc\n'
-                                )
-
-                    if sample in sample2n_reads:
-                        sys.exit('error: samples in header of '
-                                f'{file_} are not unique.')
-
-                    sample2i[sample] = i
-                    sample2n_reads[sample] = n_reads
+                (
+                        sample2i,
+                        sample2n_reads,
+                        relative_abundance_table
+                        ) = parse_header(line)
             else:
                 lineage = line[0]
                 if lineage in lineage2samples:
@@ -281,16 +348,39 @@ def import_taxonomic_profiles(args):
 
                 lineage2samples[lineage] = {}
                 for sample, i in sample2i.items():
-                    try:
-                        count = int(line[i])
-                    except:
-                        sys.exit(
-                                'error: abundances should be absolute counts. '
-                                f'Error arose with {lineage} in {file_}: '
-                                f'{line[i]}'
-                                )
+                    count = float(line[i])
 
-                    relative_abundance = count / sample2n_reads[sample]
+                    if not relative_abundance_table:
+                        # It's a read count table.
+                        if not count.is_integer():
+                            sys.exit(
+                                    'error: read counts should be round '
+                                    f'numbers. Error arose with {lineage} in '
+                                    f'{file_}: {line[i]}.'
+                                    )
+
+                        count = round(count)
+                        relative_abundance = count / sample2n_reads[sample]
+                    else:
+                        # It's a relative abundance table.
+                        if count > 1:
+                            sys.exit(
+                                    'error: relative abundances should '
+                                    f'be <= 1. Error arose with {lineage} in '
+                                    f'{file_}: {line[i]}.\n'
+                                    'If your table contains read counts '
+                                    'instead of relative abundances, the '
+                                    'total number of taxonomically annotated '
+                                    'reads should be present in the header. '
+                                    'See README.md.'
+                                    )
+
+                        relative_abundance = count
+
+                    if count == 0:
+                        # Only include taxa with an abundance > 0.
+                        continue
+
                     if relative_abundance >= args.presence_cutoff:
                         # Only consider a lineage present in the sample if it
                         # has a relative abundance of at least the
@@ -305,13 +395,13 @@ def import_taxonomic_profiles(args):
                         if (args.pairwise_comparisson_cutoff >= 1 and
                                 count >= args.pairwise_comparisson_cutoff):
                             # Only consider lineages with an absolute abundance
-                            # cutoff for the pairwise dissimilarity
+                            # cut-off for the pairwise dissimilarity
                             # calculations between samples.
                             sample2lineages_to_compare[sample][lineage] = count
                         if (args.pairwise_comparisson_cutoff < 1 and
                                 relative_abundance >= args.pairwise_comparisson_cutoff):
                             # Only consider lineages with a relative abundance
-                            # cutoff for the pairwise dissimilarity
+                            # cut-off for the pairwise dissimilarity
                             # calculations between samples.
                             sample2lineages_to_compare[sample][lineage] = count
 
@@ -319,21 +409,27 @@ def import_taxonomic_profiles(args):
             print()
         f.close()
 
-        return(lineage2samples, sample2lineages_to_compare, sample2n_reads)
+        return (
+                lineage2samples,
+                sample2lineages_to_compare,
+                sample2n_reads,
+                relative_abundance_table
+                )
 
     print()
-
-    l2s = {}
-    s2ltc = {}
-    s2n = {}
 
     if args.microbiomes_file:
         print(f'Importing taxonomic profiles from {args.microbiomes_file}.')
 
-        l2s, s2ltc, s2n = import_single_file(
+        l2s, s2ltc, s2n, ra = import_single_file(
                 args.microbiomes_file, print_line_n=True)
 
     if args.microbiomes_dir:
+        l2s = {}
+        s2ltc = {}
+        s2n = {}
+        ra = False
+
         if args.suffix:
             files = [file_ for file_ in os.listdir(args.microbiomes_dir) if
                     file_.endswith(args.suffix)]
@@ -353,7 +449,10 @@ def import_taxonomic_profiles(args):
             print(f'Importing {path} ({n + 1:,}).', end='\r')
 
             (
-                    lineage2samples, sample2lineages, sample2n_reads
+                    lineage2samples,
+                    sample2lineages,
+                    sample2n_reads,
+                    relative_abundance_table
                     ) = import_single_file(path)
 
             if len(set(s2n) & set(sample2n_reads)) > 0:
@@ -362,6 +461,16 @@ def import_taxonomic_profiles(args):
                         f'{list(set(s2n) & set(sample2n_reads))} in '
                         'multiple files.'
                         )
+
+            if not relative_abundance_table and ra:
+                sys.exit(
+                        f'error: {args.microbiomes_dir} contains both read '
+                        'count tables and relative abundance tables. Error '
+                        f'arose with {path}.'
+                        )
+
+            if relative_abundance_table:
+                ra = True
 
             s2n = {**s2n, **sample2n_reads}
 
@@ -374,19 +483,37 @@ def import_taxonomic_profiles(args):
             for sample in sample2lineages:
                 s2ltc[sample] = copy.deepcopy(sample2lineages[sample])
         print()
-    print(f'{len(s2n):,} taxonomic profiles imported containing '
-            f'{len(l2s):,} taxonomic lineages.')
 
-    return (l2s, s2ltc, s2n)
+    if not ra:
+        # It's a read count table.
+        print(f'{len(s2n):,} taxonomic profiles with read counts imported '
+                f'containing {len(l2s):,} taxonomic lineages.')
+    else:
+        # It's a relative abundance table.
+        print(f'{len(s2n):,} taxonomic profiles with relative abundances '
+                f'imported containing {len(l2s):,} taxonomic lineages.')
+
+    return (l2s, s2ltc, s2n, ra)
 
 
-def preflight_checks(l2s, s2ltc, s2n, args):
+def preflight_checks(l2s, s2ltc, s2n, ra, args):
     print()
     print('Doing some pre-flight checks.')
+
+    if ra and args.pairwise_comparisson_cutoff >= 1:
+        sys.exit(
+                'error: the input file(s) contains relative abundances, which '
+                'does not work with --c2 / --pairwise_comparisson_cutoff '
+                f'set >= 1 (it is {args.pairwise_comparisson_cutoff} reads). '
+                'You can either supply input file(s) that contain read count '
+                'or set --c2 / --pairwise_comparisson_cutoff < 1. '
+                'See README.md.'
+                )
 
     warning1 = set()
     warning2 = set()
     warning3 = set()
+    warning4 = set()
     for n, (lineage, samples) in enumerate(l2s.items()):
         print(
                 'Checking taxonomic lineages '
@@ -401,15 +528,23 @@ def preflight_checks(l2s, s2ltc, s2n, args):
         print(f'Checking {sample} ({(n + 1) / len(s2n) * 100:.2f}%).',
                 end='\r')
 
-        if 1 / s2n[sample] > args.presence_cutoff:
-            warning2.add(sample)
+        if not ra:
+            # It's a read count table.
+            if (args.presence_cutoff != 0 and
+                    1 / s2n[sample] > args.presence_cutoff):
+                warning2.add(sample)
+
+            if (args.pairwise_comparisson_cutoff < 1 and
+                    args.pairwise_comparisson_cutoff != 0 and
+                    1 / s2n[sample] > args.pairwise_comparisson_cutoff):
+                warning3.add(sample)
 
         if len(s2ltc[sample]) == 0:
-            warning3.add(sample)
+            warning4.add(sample)
     print()
 
     if len(warning1) > 1:
-        # No warning1 is not an error but a warning.
+        # Warning1 is not an error but a warning.
         print(
                 '\n'
                 '#######\n'
@@ -420,7 +555,7 @@ def preflight_checks(l2s, s2ltc, s2n, args):
                 '#######'
                 )
     if len(warning2) > 0:
-        # No warning2 is not an error but a warning for now.
+        # Warning2 is not an error but a warning for now.
         print(
                 '\n'
                 '#######\n'
@@ -433,12 +568,29 @@ def preflight_checks(l2s, s2ltc, s2n, args):
                 '#######'.format(
                     args.presence_cutoff,
                     '\n\t'.join([f'{sample} (1/{s2n[sample]:,} reads)' for
-                        sample in sorted(warning1)])
+                        sample in sorted(warning2)])
                     )
                 )
     if len(warning3) > 0:
-        # No warning3 is an error for now. I don't want to allow for this
-        # because it generates confusion if some samples are not included in
+        # Warning3 is not an error but a warning for now.
+        print(
+                '\n'
+                '#######\n'
+                'warning: --c2 / --pairwise_comparisson_cutoff ({0}) is set '
+                'lower than the relative abundance of a single read in some '
+                'samples. Consider excluding these samples or increasing the '
+                'relative abundance cut-off.\n'
+                'samples:\n'
+                '\t{1}\n'
+                '#######'.format(
+                    args.pairwise_comparisson_cutoff,
+                    '\n\t'.join([f'{sample} (1/{s2n[sample]:,} reads)' for
+                        sample in sorted(warning3)])
+                    )
+                )
+    if len(warning4) > 0:
+        # Warning4 is an error for now. I don't want to allow for this because
+        # it generates confusion if some samples are not included in
         # the calculations.
         sys.exit(
                 'error: some samples contain no lineages at rank {0} with at '
@@ -451,11 +603,11 @@ def preflight_checks(l2s, s2ltc, s2n, args):
                 '\t{2}'.format(
                     args.rank_of_pairwise_comparisson,
                     args.pairwise_comparisson_cutoff,
-                    '\n\t'.join(sorted(warning3))
+                    '\n\t'.join(sorted(warning4))
                     )
                 )
 
-    if len(warning1 | warning2 | warning3) == 0:
+    if len(warning1 | warning2 | warning3 | warning4) == 0:
         print('Pre-flight checks done. Everything looks OK!')
     else:
         print()
@@ -671,10 +823,10 @@ def write_file(SNB, l2s, s2n, args):
 def main():
     args = parse_arguments()
 
-    l2s, s2ltc, s2n = import_taxonomic_profiles(args)
+    l2s, s2ltc, s2n, ra = import_taxonomic_profiles(args)
 
     # Do some basic checks on the samples.
-    preflight_checks(l2s, s2ltc, s2n, args)
+    preflight_checks(l2s, s2ltc, s2n, ra, args)
 
     # Calculate pairwise dissimilarities.
     (
